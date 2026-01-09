@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Weather Dashboard</title>
+
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+    crossorigin=""/>
+    
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+
+  <aside class="sidebar">
+    <div class="sidebar-header">
+      <div>
+        <h1>Weather Dashboard</h1>
+        <div style="font-size: 12px; color: #6b7280; margin-top: 4px;">Local Sensor + Open-Meteo</div>
+      </div>
+    </div>
+
+    <div class="sidebar-content">
+      <div class="search-box">
+        <div class="input-row">
+          <div class="input-group">
+            <label>Latitude</label>
+            <input type="number" id="latInput" value="-6.1754" step="any">
+          </div>
+          <div class="input-group">
+            <label>Longitude</label>
+            <input type="number" id="longInput" value="106.8272" step="any">
+          </div>
+        </div>
+        <div class="action-buttons">
+          <button class="btn-primary" onclick="searchFromInput()">🔍 Cari Data</button>
+          <button class="btn-secondary" onclick="toggleMap()">🗺️ Open Map</button>
+        </div>
+      </div>
+
+      <div style="margin-bottom: 12px; font-weight: 700; font-size: 14px; color: #0e46a3;">
+        DATA RUANGAN (RASPBERRY PI)
+      </div>
+
+      <div class="grid" style="margin-bottom: 24px;">
+        <div class="tile" style="border-left: 4px solid #0e46a3;">
+          <div class="label">Suhu Ruangan</div>
+          <div class="big"><span id="room-temp">--</span>°C</div>
+        </div>
+
+        <div class="tile" style="border-left: 4px solid #22c55e;">
+          <div class="label">Kelembaban</div>
+          <div class="big"><span id="room-hum">--</span>%</div>
+        </div>
+
+        <div class="tile" style="border-left: 4px solid #8b4513;">
+            <div class="label">Kelembaban Tanah</div>
+            <div class="big"><span id="room-soil">--</span>%</div>
+        </div>
+      </div>
+
+      <div class="tile full-width" style="margin-bottom: 24px; position: relative;">
+          
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+              <div class="label">Activity Log (Live)</div>
+              
+              <div style="display: flex; align-items: center; gap: 8px;">
+                  <span style="font-size: 12px; font-weight: bold; color: #6b7280;">SIMULATOR</span>
+                  <label class="switch">
+                      <input type="checkbox" id="simToggle" onchange="toggleSimulation()">
+                      <span class="slider round"></span>
+                  </label>
+              </div>
+          </div>
+
+          <div style="height: 250px; background: white; border-radius: 8px; padding: 10px; border: 1px solid #e5e7eb;">
+            <canvas id="activityChart"></canvas>
+          </div>
+      </div>
+
+      <div style="margin-bottom: 12px; font-weight: 700; font-size: 14px; color: #0e46a3;">
+        DATA LUAR (OPEN-METEO)
+      </div>
+
+      <div class="grid">
+        <div class="tile full-width">
+          <div class="label">Lokasi Terdeteksi</div>
+          <div id="location" class="big" style="font-size: 18px;">Loading...</div>
+        </div>
+        <div class="tile">
+          <div class="label">Suhu Luar</div>
+          <div class="big"><span id="temp">--</span>°C</div>
+        </div>
+        <div class="tile">
+          <div class="label">Kondisi</div>
+          <div id="condition" class="big" style="font-size: 18px;">—</div>
+        </div>
+        <div class="tile">
+          <div class="label">Angin (km/h)</div>
+          <div id="windspeed" class="big">—</div>
+        </div>
+        <div class="tile">
+          <div class="label">Arah Angin</div>
+          <div id="winddir" class="big">—</div>
+        </div>
+        <div class="tile">
+          <div class="label">Elevasi</div>
+          <div id="elevation" class="big">—</div>
+        </div>
+        <div class="tile full-width">
+          <div class="label">Waktu Observasi</div>
+          <div id="time" class="big" style="font-size: 18px;">—</div>
+        </div>
+      </div>
+
+      <div class="footer-credit">
+        Data by Open-Meteo & Raspberry Pi <br>
+        Darrell Nararya - 152024033
+      </div>
+    </div>
+  </aside>
+
+  <div class="map-drawer">
+    <button class="close-map-btn" onclick="toggleMap()">
+      ← Close Map
+    </button>
+
+    <div class="map-search-container">
+      <div class="search-input-wrapper">
+        <input type="text" id="mapSearchInput" placeholder="Cari kota..." autocomplete="off">
+        <button onclick="searchLocationOnMap()">Go</button>
+      </div>
+      <div id="mapSearchResults" class="search-results-list"></div>
+    </div>
+
+    <div id="map"></div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+
+  <script>
+    let map, marker;
+    let debounceTimer;
+
+    // --- 1. FETCH LOCAL DATA (CLEANED: No Red Text) ---
+    async function updateRoomData() {
+      try {
+        const response = await fetch('/sensor-read'); 
+        const data = await response.json();
+
+        if(data.temperature_c !== undefined) {
+            const tempEl = document.getElementById('room-temp');
+            tempEl.textContent = data.temperature_c;
+            
+            // FORCE REMOVE ANY COLOR STYLES
+            // This ensures it never stays red even if Erratic Mode is on
+            tempEl.style.color = "inherit"; 
+            tempEl.style.fontWeight = "bold"; 
+        }
+
+        if(data.humidity !== undefined) document.getElementById('room-hum').textContent = data.humidity;
+        if(data.soil_percent !== undefined) document.getElementById('room-soil').textContent = data.soil_percent;
+
+        // Sync toggle switch state
+        const toggle = document.getElementById('simToggle');
+        if (data.device && (data.device.includes("SIMULATOR") || data.device.includes("ERRATIC"))) {
+            if (!toggle.checked) toggle.checked = true;
+        }
+
+      } catch (e) {
+        console.log("Waiting for Raspberry Pi...");
+      }
+    }
+
+    // --- 2. INITIALIZE MAP ---
+    function initMap() {
+      map = L.map('map').setView([-6.1754, 106.8272], 13);
+      L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19,
+        attribution: '&copy; OpenStreetMap'
+      }).addTo(map);
+      marker = L.marker([-6.1754, 106.8272]).addTo(map);
+
+      map.on('click', function(e) {
+        const lat = e.latlng.lat.toFixed(4);
+        const lng = e.latlng.lng.toFixed(4);
+        document.getElementById('latInput').value = lat;
+        document.getElementById('longInput').value = lng;
+        marker.setLatLng(e.latlng);
+        fetchWeatherData(lat, lng);
+      });
+    }
+
+    function toggleMap() {
+      document.body.classList.toggle('map-active');
+      setTimeout(() => { map.invalidateSize(); }, 400);
+    }
+
+    // --- 3. AUTOCOMPLETE & SEARCH LOGIC ---
+    const searchInput = document.getElementById('mapSearchInput');
+    const resultsList = document.getElementById('mapSearchResults');
+
+    searchInput.addEventListener('input', function() {
+      const query = this.value;
+      clearTimeout(debounceTimer);
+      if (query.length < 3) { resultsList.style.display = 'none'; return; }
+      debounceTimer = setTimeout(() => { fetchSuggestions(query); }, 300);
+    });
+
+    async function fetchSuggestions(query) {
+      const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=5`;
+      try {
+        const res = await fetch(url);
+        const data = await res.json();
+        showSuggestions(data);
+      } catch (e) { console.error(e); }
+    }
+
+    function showSuggestions(data) {
+      resultsList.innerHTML = '';
+      if (data.length === 0) { resultsList.style.display = 'none'; return; }
+      data.forEach(item => {
+        const div = document.createElement('div');
+        div.className = 'search-result-item';
+        div.textContent = item.display_name;
+        div.onclick = () => { selectLocation(item.lat, item.lon, item.display_name); };
+        resultsList.appendChild(div);
+      });
+      resultsList.style.display = 'flex';
+    }
+
+    function selectLocation(lat, lon, name) {
+      searchInput.value = name;
+      resultsList.style.display = 'none';
+      const newLatLng = new L.LatLng(lat, lon);
+      map.setView(newLatLng, 13);
+      marker.setLatLng(newLatLng);
+      document.getElementById('latInput').value = parseFloat(lat).toFixed(4);
+      document.getElementById('longInput').value = parseFloat(lon).toFixed(4);
+      fetchWeatherData(lat, lon);
+    }
+
+    function searchLocationOnMap() {
+      const query = searchInput.value;
+      if(query) fetchSuggestions(query);
+    }
+
+    document.addEventListener('click', function(e) {
+      if (!searchInput.contains(e.target) && !resultsList.contains(e.target)) {
+        resultsList.style.display = 'none';
+      }
+    });
+
+    // --- 4. WEATHER & GEOCODING DATA ---
+    function searchFromInput() {
+      const lat = document.getElementById('latInput').value;
+      const lon = document.getElementById('longInput').value;
+      if (!lat || !lon) { alert("Enter valid coordinates"); return; }
+      const newLatLng = new L.LatLng(lat, lon);
+      map.setView(newLatLng, 13);
+      marker.setLatLng(newLatLng);
+      fetchWeatherData(lat, lon);
+    }
+
+    async function fetchWeatherData(lat, lon) {
+      try {
+        const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current_weather=true`;
+        const res = await fetch(url);
+        if (!res.ok) throw new Error("Weather fetch failed");
+        const data = await res.json();
+        const w = data.current_weather;
+
+        document.getElementById('temp').textContent = `${w.temperature}`;
+        document.getElementById('windspeed').textContent = `${w.windspeed}`;
+        document.getElementById('winddir').textContent = `${w.winddirection}°`;
+        document.getElementById('condition').textContent = getWeatherDescription(w.weathercode);
+        document.getElementById('elevation').textContent = `${data.elevation} m`;
+
+        const d = new Date(w.time);
+        document.getElementById('time').textContent = d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+        fetchLocationName(lat, lon);
+      } catch (e) { console.error(e); }
+    }
+
+    async function fetchLocationName(lat, lon) {
+      const locEl = document.getElementById('location');
+      locEl.textContent = "Loading...";
+      try {
+        const url = `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}&zoom=10`;
+        const res = await fetch(url);
+        const data = await res.json();
+        if (data && data.address) {
+          const city = data.address.city || data.address.town || "Unknown";
+          locEl.textContent = `${city}, ${data.address.country || ''}`;
+        } else { locEl.textContent = "Unknown Location"; }
+      } catch (e) { locEl.textContent = `${lat}, ${lon}`; }
+    }
+
+    function getWeatherDescription(code) {
+      const codes = {0:'Cerah', 1:'Cerah Berawan', 2:'Berawan', 3:'Mendung', 61:'Hujan', 80:'Hujan Lokal', 95:'Badai Petir'};
+      return codes[code] || 'Unknown';
+    }
+
+    // --- 6. CHART CONFIGURATION (Clean White Mode) ---
+    let sensorChart;
+
+    function initChart() {
+      const ctx = document.getElementById('activityChart').getContext('2d');
+      
+      let gradientGreen = ctx.createLinearGradient(0, 0, 0, 400);
+      gradientGreen.addColorStop(0, 'rgba(34, 197, 94, 0.4)');
+      gradientGreen.addColorStop(1, 'rgba(34, 197, 94, 0.0)');
+
+      let gradientBlue = ctx.createLinearGradient(0, 0, 0, 400);
+      gradientBlue.addColorStop(0, 'rgba(14, 70, 163, 0.4)');
+      gradientBlue.addColorStop(1, 'rgba(14, 70, 163, 0.0)');
+
+      let gradientBrown = ctx.createLinearGradient(0, 0, 0, 400);
+      gradientBrown.addColorStop(0, 'rgba(139, 69, 19, 0.4)');
+      gradientBrown.addColorStop(1, 'rgba(139, 69, 19, 0.0)');
+
+      sensorChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels: [],
+          datasets: [
+            {
+              label: 'Temp (°C)',
+              borderColor: '#0e46a3',
+              backgroundColor: gradientBlue,
+              borderWidth: 2,
+              pointRadius: 0,       
+              pointHoverRadius: 4,
+              fill: true,           
+              data: [],
+              tension: 0.4          
+            },
+            {
+              label: 'Humidity (%)',
+              borderColor: '#22c55e',
+              backgroundColor: gradientGreen,
+              borderWidth: 2,
+              pointRadius: 0,
+              pointHoverRadius: 4,
+              fill: true,
+              data: [],
+              tension: 0.4
+            },
+            {
+              label: 'Soil Moisture (%)',
+              borderColor: '#8b4513',
+              backgroundColor: gradientBrown,
+              borderWidth: 2,
+              pointRadius: 0,
+              pointHoverRadius: 4,
+              fill: true,
+              data: [],
+              tension: 0.4
+            }
+          ]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          animation: false,
+          interaction: { mode: 'index', intersect: false },
+          plugins: { legend: { labels: { color: '#374151' } } },
+          scales: {
+            x: { ticks: { color: '#6b7280', maxTicksLimit: 6 }, grid: { color: '#e5e7eb' } },
+            y: { beginAtZero: true, max: 100, ticks: { color: '#6b7280' }, grid: { color: '#e5e7eb' } }
+          }
+        }
+      });
+    }
+
+    async function updateChartData() {
+      try {
+        const response = await fetch('/history'); 
+        const history = await response.json();
+        sensorChart.data.labels = [];
+        sensorChart.data.datasets[0].data = [];
+        sensorChart.data.datasets[1].data = [];
+        sensorChart.data.datasets[2].data = [];
+
+        history.forEach(entry => {
+          sensorChart.data.labels.push(entry.time);
+          sensorChart.data.datasets[0].data.push(entry.temp);
+          sensorChart.data.datasets[1].data.push(entry.hum);
+          sensorChart.data.datasets[2].data.push(entry.soil);
+        });
+        sensorChart.update();
+      } catch (e) { console.error("Chart update failed", e); }
+    }
+
+    // --- 7. SIMULATION TOGGLE ---
+    async function toggleSimulation() {
+      const toggle = document.getElementById('simToggle');
+      const isActive = toggle.checked;
+      try {
+        await fetch('/toggle-sim', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ active: isActive })
+        });
+      } catch (e) {
+        console.error("Toggle failed", e);
+        toggle.checked = !isActive;
+      }
+    }
+
+    // --- 5. STARTUP ---
+    window.onload = function() {
+      initMap();
+      initChart();
+      searchFromInput();
+      setInterval(updateRoomData, 2000);
+      setInterval(updateChartData, 2000);
+    };
+  </script>
+</body>
+</html>
